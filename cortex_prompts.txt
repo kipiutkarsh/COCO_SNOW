@@ -1,0 +1,930 @@
+Fetch the data from table SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.INCIDENTS and pass the raw text to 
+ Snowflake Cortex-hosted Large Language Model (e.g., Llama 3) and give me back what should be assignment group and assigned to parameters along with the  confidence score
+---
+ Column names from incident table - NUMBER, OPENED_AT, SHORT_DESCRIPTION, CALLER_ID, PRIORITY, STATE, CATEGORY, ASSIGNMENT_GROUP, ASSIGNED_TO, SYS_UPDATED_ON, SYS_UPDATED_BY
+
+ filtering requirement - Status : In Progress and New
+
+LLM model preference -llama3-70b (more accurate, slower)
+
+Show the results in - Parsed JSON format (separate columns for assignment_group, assigned_to, confidence_score)?
+
+All the above data in incidents table is dummy data created  for a hackathon use case , so prepare the list of assignment recommendation accordingly
+
+I need a python code
+---
+this command is giving syntax error -pip install snowflake-connector-python pandas openpyxl
+--
+I was running the abve command in snowflake python shee
+--
+will the sql query take lot of time in the first run ?
+--
+got the results .. how do I train this model ? Can I provide multiple older incident details and train the model to increase the accuracy and confidence score ?
+--
+here's the result of some closed incidents :
+Category : Inquiry / Help , Priority : 3 - Moderate , Description : Unable to connect to email , Group : Network , Person : David Loo
+Category : Software , Priority : 4 - Low , Description : my PDF docs are all locked from editing , Group : Service Desk , Person : Luke Wilson
+Category : Inquiry / Help , Priority : 5 - Planning , Description : Issue with networking , Group : Network , Person : Luke Wilson
+Category : Inquiry / Help , Priority : 5 - Planning , Description : Reset my password , Group : Service Desk , Person : Luke Wilson
+Category : Inquiry / Help , Priority : 1 - Critical , Description : Does not look like a backup occurred last night , Group : Software , Person : David Loo
+Category : Software , Priority : 1 - Critical , Description : File Server is 80% full - Needs upgrade , Group : Hardware , Person : Don Goodliffe
+Category : Inquiry / Help , Priority : 5 - Planning , Description : EMAIL Server Down Again , Group : Hardware , Person : David Loo
+Category : Inquiry / Help , Priority : 5 - Planning , Description : Lost connection to the wireless network , Group : Network , Person : David Loo
+Category : Inquiry / Help , Priority : 5 - Planning , Description : My disk is still having issues. Cant delete a file  , Group : Service Desk , Person : Don Goodliffe
+Category : Hardware , Priority : 5 - Planning , Description : Seem to have an issue with my hard drive... , Group : Hardware , Person : Don Goodliffe
+Category : Inquiry / Help , Priority : 5 - Planning , Description : Issue with a web page on wiki , Group : Service Desk , Person : ITIL User
+Category : Inquiry / Help , Priority : 5 - Planning , Description : New employee hire , Group :  , Person : Beth Anglin
+Category : Inquiry / Help , Priority : 1 - Critical , Description : Missing my home directory , Group :  , Person : Bud Richman
+Category : Inquiry / Help , Priority : 1 - Critical , Description : EMAIL is slow when an attachment is involved , Group : Software , Person : David Loo
+Category : Software , Priority : 5 - Planning , Description : Customer didnt receive eFax , Group : Database , Person : David Loo
+Category : Inquiry / Help  , Priority : 3 - Moderate , Description : Need new Blackberry set up , Group : Hardware , Person : ITIL User
+--
+if I give details of more historical tickets  , can we store them at some place and only refer it in the final query as this query would become too large
+--
+In the earlier thread , I got a code the below code but its not showing any data for recommended_assignment_group , recommended_assigned_to and confidence_score:
+
+WITH training_prompt AS (
+    SELECT SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.GET_TRAINING_EXAMPLES_PROMPT() AS examples
+),
+llm_results AS (
+    SELECT 
+        i.NUMBER,
+        i.OPENED_AT,
+        i.SHORT_DESCRIPTION,
+        i.CALLER_ID,
+        i.PRIORITY,
+        i.STATE,
+        i.CATEGORY,
+        i.ASSIGNMENT_GROUP AS current_assignment_group,
+        i.ASSIGNED_TO AS current_assigned_to,
+        i.SYS_UPDATED_ON,
+        i.SYS_UPDATED_BY,
+        SNOWFLAKE.CORTEX.COMPLETE(
+            'llama3-70b',
+            CONCAT(
+                'You are an IT service management expert. Learn from these historical resolved incidents:
+
+',
+                '=== TRAINING EXAMPLES ===
+
+',
+                tp.examples,
+                '
+=== KEY PATTERNS ===
+',
+                '• Network issues → Network Team (David Loo/Luke Wilson)
+',
+                '• Password/Help desk → Service Desk (Luke Wilson/Don Goodliffe)
+',
+                '• Backup/Email software → Software Team (David Loo)
+',
+                '• Hardware/Servers → Hardware Team (Don Goodliffe/David Loo)
+',
+                '• Database/eFax → Database Team (David Loo)
+
+',
+                '=== NEW INCIDENT TO ANALYZE ===
+
+',
+                'Incident Number: ', COALESCE(i.NUMBER, 'N/A'), '
+',
+                'Description: ', COALESCE(i.SHORT_DESCRIPTION, 'N/A'), '
+',
+                'Category: ', COALESCE(i.CATEGORY, 'N/A'), '
+',
+                'Priority: ', COALESCE(i.PRIORITY, 'N/A'), '
+',
+                'State: ', COALESCE(i.STATE, 'N/A'), '
+
+',
+                'Based on examples above, recommend assignment. Respond in JSON:
+',
+                '{"assignment_group": "X", "assigned_to": "Y", "confidence_score": Z, "reasoning": "..."}'
+            )
+        ) AS llm_response
+    FROM 
+        SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.INCIDENTS i
+    CROSS JOIN training_prompt tp
+    WHERE 
+        i.STATE IN ('In Progress', 'New')
+)
+SELECT 
+    NUMBER,
+    OPENED_AT,
+    SHORT_DESCRIPTION,
+    CATEGORY,
+    PRIORITY,
+    STATE,
+    current_assignment_group,
+    current_assigned_to,
+    TRY_PARSE_JSON(llm_response):assignment_group::STRING AS recommended_assignment_group,
+    TRY_PARSE_JSON(llm_response):assigned_to::STRING AS recommended_assigned_to,
+    TRY_PARSE_JSON(llm_response):confidence_score::NUMBER AS confidence_score,
+    TRY_PARSE_JSON(llm_response):reasoning::STRING AS reasoning,
+    llm_response AS full_llm_response
+FROM 
+    llm_results
+ORDER BY 
+    confidence_score DESC, OPENED_AT DESC;
+--
+this is what I see in llm_response column : {"assignment_group": "IT Support", "assigned_to": "John Doe", "confidence_score": 0.8, "reasoning": "Shared folder access issues are typically handled by the IT Support team, and John Doe is the team lead."}
+--
+in the fixed query getting an error - unexpected 'ELSE'.
+--
+I would need to load this data with recommended values and confidence score in another snowflake table :
+SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.LLM_DATA
+columns :
+NUMBER VARCHAR(16777216),
+	OPENED_AT VARCHAR(16777216),
+	SHORT_DESCRIPTION VARCHAR(16777216),
+	CALLER_ID VARCHAR(16777216),
+	PRIORITY VARCHAR(16777216),
+	STATE VARCHAR(16777216),
+	CATEGORY VARCHAR(16777216),
+	CURRENT_ASSIGNMENT_GROUP VARCHAR(16777216),
+	CURRENT_ASSIGNED_TO VARCHAR(16777216),
+	RECOMMENDED_ASSIGNMENT_GROUP VARCHAR(16777216),
+    RECOMMENDED_ASSIGNED_TO VARCHAR(16777216),
+    CONFIDENCE_SCORE  VARCHAR(16777216),
+    REASONING VARCHAR(16777216)
+
+Modify the query accordingly
+--
+For our hackathon use case , we have decided the following steps , can you create an automatic running process or an app or an interface which can do the below tasks:
+
+1. As soon as data enters into SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.INCIDENTS for records with SENT_TO_SERVICE_NOW = FALSE , all the valid records should be sent to the the below sql code . you should use the vector search algorithm on the SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.INCIDENT_TRAINING_EXAMPLES data in order to provide recommended assignement group and recommended assigne dto values. do not just look at category and sub catergory. Modify the code accordingly
+
+CREATE OR REPLACE TABLE SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.LLM_DATA AS
+WITH training_prompt AS (
+    SELECT SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.GET_TRAINING_EXAMPLES_PROMPT() AS examples
+),
+llm_results AS (
+    SELECT 
+        i.NUMBER,
+        i.OPENED_AT,
+        i.SHORT_DESCRIPTION,
+        i.CALLER_ID,
+        i.PRIORITY,
+        i.STATE,
+        i.CATEGORY,
+        i.ASSIGNMENT_GROUP AS current_assignment_group,
+        i.ASSIGNED_TO AS current_assigned_to,
+        SNOWFLAKE.CORTEX.COMPLETE(
+            'llama3-70b',
+            CONCAT(
+                '=== YOUR TASK ===
+',
+                'You are an IT incident routing system. Study the historical examples below and recommend assignment using ONLY the exact team and person names that appear in these examples.
+
+',
+                '=== HISTORICAL RESOLVED INCIDENTS (YOUR ONLY SOURCE OF TRUTH) ===
+',
+                tp.examples,
+                '
+
+=== VALID ASSIGNMENT GROUPS (USE ONLY THESE) ===
+',
+                'Extract valid groups from examples above. Common ones:
+',
+                '- Network Team
+',
+                '- Service Desk
+',
+                '- Software Team
+',
+                '- Hardware Team
+',
+                '- Database Team
+
+',
+                '=== VALID ASSIGNED_TO PERSONS (USE ONLY THESE) ===
+',
+                'Extract valid persons from examples above. Common ones:
+',
+                '- David Loo
+',
+                '- Luke Wilson
+',
+                '- Don Goodliffe
+
+',
+                '=== NEW INCIDENT TO ROUTE ===
+',
+                'Number: ', COALESCE(i.NUMBER, 'N/A'), '
+',
+                'Description: ', COALESCE(i.SHORT_DESCRIPTION, 'N/A'), '
+',
+                'Category: ', COALESCE(i.CATEGORY, 'N/A'), '
+',
+                'Priority: ', COALESCE(i.PRIORITY, 'N/A'), '
+
+',
+                '=== INSTRUCTIONS ===
+',
+                '1. Find similar incidents in the historical examples above
+',
+                '2. Use the EXACT assignment_group name from those examples
+',
+                '3. Use the EXACT assigned_to name from those examples
+',
+                '4. Do NOT invent new team or person names
+',
+                '5. Respond with ONLY this JSON (no other text):
+
+',
+                '{"assignment_group": "exact_name_from_examples", "assigned_to": "exact_name_from_examples", "confidence_score": 0.85, "reasoning": "matched with incident X because..."}
+
+',
+                'JSON:'
+            )
+        ) AS llm_response
+    FROM 
+        SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.INCIDENTS i
+    CROSS JOIN training_prompt tp
+    WHERE 
+        i.STATE IN ('In Progress', 'New')
+)
+SELECT 
+    NUMBER,
+    OPENED_AT::VARCHAR(16777216) AS OPENED_AT,
+    SHORT_DESCRIPTION,
+    CALLER_ID,
+    PRIORITY,
+    STATE,
+    CATEGORY,
+    current_assignment_group AS CURRENT_ASSIGNMENT_GROUP,
+    current_assigned_to AS CURRENT_ASSIGNED_TO,
+    TRY_PARSE_JSON(llm_response):assignment_group::VARCHAR(16777216) AS RECOMMENDED_ASSIGNMENT_GROUP,
+    TRY_PARSE_JSON(llm_response):assigned_to::VARCHAR(16777216) AS RECOMMENDED_ASSIGNED_TO,
+    TRY_PARSE_JSON(llm_response):confidence_score::VARCHAR(16777216) AS CONFIDENCE_SCORE,
+    TRY_PARSE_JSON(llm_response):reasoning::VARCHAR(16777216) AS REASONING
+FROM 
+    llm_results
+ORDER BY 
+    CONFIDENCE_SCORE DESC NULLS LAST, 
+    OPENED_AT DESC;
+
+
+
+what ever data gets loaded into SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.LLM_DATA , immediately insert the same data into SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.INCIDENT_TRAINING_EXAMPLES also
+--
+While running below code :
+UPDATE SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.INCIDENT_TRAINING_EXAMPLES
+SET DESCRIPTION_EMBEDDING = SNOWFLAKE.CORTEX.EMBED_TEXT_1024(
+    'e5-base-v2',
+    COALESCE(SHORT_DESCRIPTION, '') || ' ' || 
+    COALESCE(CATEGORY, '') 
+    --|| ' ' || 
+    --COALESCE(SUBCATEGORY, '')
+)
+WHERE DESCRIPTION_EMBEDDING IS NULL;
+
+
+getting an error - Array-like value being cast to a vector has incorrect dimension
+--
+EMBED_TEXT_768 worked
+--
+While creating the function :
+CREATE OR REPLACE FUNCTION SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.GET_SIMILAR_INCIDENTS(
+    incident_description VARCHAR,
+    incident_category VARCHAR,
+    --incident_subcategory VARCHAR,
+    top_k INTEGER
+)
+RETURNS TABLE (
+    incident_number VARCHAR,
+    description VARCHAR,
+    category VARCHAR,
+    --subcategory VARCHAR,
+    assignment_group VARCHAR,
+    assigned_to VARCHAR,
+    similarity_score FLOAT
+)
+AS
+$$
+    WITH incident_embedding AS (
+        SELECT SNOWFLAKE.CORTEX.EMBED_TEXT_768(
+            'e5-base-v2',
+            COALESCE(incident_description, '') || ' ' || 
+            COALESCE(incident_category, '') 
+        ) AS query_vector
+    )
+    SELECT 
+        t.NUMBER AS incident_number,
+        t.SHORT_DESCRIPTION AS description,
+        t.CATEGORY AS category,
+        --t.SUBCATEGORY AS subcategory,
+        t.ASSIGNMENT_GROUP AS assignment_group,
+        t.ASSIGNED_TO AS assigned_to,
+        VECTOR_COSINE_SIMILARITY(t.DESCRIPTION_EMBEDDING, ie.query_vector) AS similarity_score
+    FROM 
+        SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.INCIDENT_TRAINING_EXAMPLES t,
+        incident_embedding ie
+    WHERE 
+        t.DESCRIPTION_EMBEDDING IS NOT NULL
+        AND t.STATE = 'Resolved'
+        AND t.ASSIGNMENT_GROUP IS NOT NULL
+        AND t.ASSIGNED_TO IS NOT NULL
+    ORDER BY 
+        similarity_score DESC
+    LIMIT top_k
+$$;
+
+
+getting an error - unexpected 'WITH'. syntax error line 3 at position 8 unexpected 'SELECT'. syntax error line 7 at position 8 unexpected ')'.
+--
+getting error in function generation - unexpected 'SELECT'. syntax error line 4 at position 28 unexpected 'AS'. syntax error line 9 at position 12 unexpected 't'. syntax error line 13 at position 12 unexpected ')'.
+
+--
+I am running the below code in snowflake sql worksheets:
+
+CREATE OR REPLACE FUNCTION SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.GET_SIMILAR_INCIDENTS(
+    incident_description VARCHAR,
+    incident_category VARCHAR,
+    top_k INTEGER
+)
+RETURNS TABLE (
+    incident_number VARCHAR,
+    description VARCHAR,
+    category VARCHAR,
+    assignment_group VARCHAR,
+    assigned_to VARCHAR,
+    similarity_score FLOAT
+)
+AS
+$$
+    SELECT 
+        t.NUMBER AS incident_number,
+        t.SHORT_DESCRIPTION AS description,
+        t.CATEGORY AS category,
+        t.ASSIGNMENT_GROUP AS assignment_group,
+        t.ASSIGNED_TO AS assigned_to,
+        VECTOR_COSINE_SIMILARITY(
+            t.DESCRIPTION_EMBEDDING, 
+            SNOWFLAKE.CORTEX.EMBED_TEXT_768(
+                'e5-base-v2',
+                COALESCE(incident_description, '') || ' ' || COALESCE(incident_category, '')
+            )
+        ) AS similarity_score
+    FROM 
+        SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.INCIDENT_TRAINING_EXAMPLES t
+    WHERE 
+        t.DESCRIPTION_EMBEDDING IS NOT NULL
+        AND t.STATE = 'Resolved'
+        AND t.ASSIGNMENT_GROUP IS NOT NULL
+        AND t.ASSIGNED_TO IS NOT NULL
+    ORDER BY 
+        similarity_score DESC
+    LIMIT top_k
+$$;
+--
+still getting an error - unexpected 'SELECT'. syntax error line 2 at position 16 unexpected 'top_k'. syntax error line 13 at position 12 unexpected ')'.
+--
+In the stored procedure code , getting an error -  unexpected 'DIAGNOSTICS'.
+--
+while creating a streamlit app for monitoring , getting an error - Installing dependencies failed because the pyproject.toml file does not exist. Please create it.
+--
+I have created environment.yml file in streamlit in snowflake with below details:
+name: app_environment
+channels:
+  - snowflake
+dependencies:
+  - pandas=3.0.1
+  - python=3.12.*
+  - snowflake-snowpark-python=
+  - streamlit=
+  - plotly
+
+Then I have written below code in streamlit_app.py file :
+
+#Step 6: Create Streamlit App for Monitoring
+# streamlit_app.py
+import streamlit as st
+import pandas as pd
+from snowflake.snowpark.context import get_active_session
+
+# Get Snowflake session
+session = get_active_session()
+
+st.title("🎯 AI-Powered Incident Assignment System")
+st.markdown("### Real-time Incident Routing with Vector Search + LLM")
+
+# Tabs for different views
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "🔍 LLM Recommendations", "📚 Training Data", "⚙️ Manual Process"])
+
+with tab1:
+    st.header("System Overview")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    # Metrics
+    total_incidents = session.sql("""
+        SELECT COUNT(*) as count 
+        FROM SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.INCIDENTS 
+        WHERE STATE IN ('New', 'In Progress')
+    """).collect()[0]['COUNT']
+    
+    pending_incidents = session.sql("""
+        SELECT COUNT(*) as count 
+        FROM SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.INCIDENTS 
+        WHERE SENT_TO_SERVICE_NOW = FALSE
+    """).collect()[0]['COUNT']
+    
+    processed_incidents = session.sql("""
+        SELECT COUNT(*) as count 
+        FROM SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.LLM_DATA
+    """).collect()[0]['COUNT']
+    
+    training_examples = session.sql("""
+        SELECT COUNT(*) as count 
+        FROM SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.INCIDENT_TRAINING_EXAMPLES
+    """).collect()[0]['COUNT']
+    
+    col1.metric("Total Open Incidents", total_incidents)
+    col2.metric("Pending Processing", pending_incidents, delta=f"-{pending_incidents}" if pending_incidents > 0 else "0")
+    col3.metric("AI Processed", processed_incidents, delta=f"+{processed_incidents}")
+    col4.metric("Training Examples", training_examples)
+    
+    # Task status
+    st.subheader("Automation Status")
+    task_status = session.sql("""
+        SELECT NAME, STATE, SCHEDULE, NEXT_SCHEDULED_TIME 
+        FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY())
+        WHERE NAME = 'AUTO_PROCESS_INCIDENTS_TASK'
+        ORDER BY SCHEDULED_TIME DESC
+        LIMIT 1
+    """).to_pandas()
+    
+    if not task_status.empty:
+        st.dataframe(task_status, use_container_width=True)
+    else:
+        st.info("Task not found or never run")
+
+with tab2:
+    st.header("LLM Recommendations")
+    
+    # Filter options
+    col1, col2 = st.columns(2)
+    with col1:
+        confidence_filter = st.slider("Minimum Confidence Score", 0.0, 1.0, 0.7)
+    with col2:
+        category_filter = st.multiselect(
+            "Filter by Category",
+            options=session.sql("SELECT DISTINCT CATEGORY FROM SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.LLM_DATA").to_pandas()['CATEGORY'].tolist()
+        )
+    
+    # Build query
+    query = f"""
+        SELECT 
+            NUMBER,
+            SHORT_DESCRIPTION,
+            CATEGORY,
+            PRIORITY,
+            STATE,
+            CURRENT_ASSIGNMENT_GROUP,
+            CURRENT_ASSIGNED_TO,
+            RECOMMENDED_ASSIGNMENT_GROUP,
+            RECOMMENDED_ASSIGNED_TO,
+            CONFIDENCE_SCORE,
+            REASONING
+        FROM SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.LLM_DATA
+        WHERE TRY_CAST(CONFIDENCE_SCORE AS FLOAT) >= {confidence_filter}
+    """
+    
+    if category_filter:
+        categories = "','".join(category_filter)
+        query += f" AND CATEGORY IN ('{categories}')"
+    
+    query += " ORDER BY TRY_CAST(CONFIDENCE_SCORE AS FLOAT) DESC"
+    
+    recommendations_df = session.sql(query).to_pandas()
+    
+    st.dataframe(
+        recommendations_df,
+        use_container_width=True,
+        column_config={
+            "CONFIDENCE_SCORE": st.column_config.ProgressColumn(
+                "Confidence",
+                format="%.2f",
+                min_value=0,
+                max_value=1,
+            ),
+        }
+    )
+    
+    # Download button
+    st.download_button(
+        label="Download Recommendations as CSV",
+        data=recommendations_df.to_csv(index=False).encode('utf-8'),
+        file_name='incident_recommendations.csv',
+        mime='text/csv',
+    )
+
+with tab3:
+    st.header("Training Data Statistics")
+    
+    # Assignment distribution
+    st.subheader("Assignment Group Distribution")
+    dist_df = session.sql("""
+        SELECT 
+            ASSIGNMENT_GROUP,
+            COUNT(*) as incident_count
+        FROM SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.INCIDENT_TRAINING_EXAMPLES
+        GROUP BY ASSIGNMENT_GROUP
+        ORDER BY incident_count DESC
+    """).to_pandas()
+    
+    st.bar_chart(dist_df.set_index('ASSIGNMENT_GROUP'))
+    
+    # Recent additions
+    st.subheader("Recently Added Training Examples")
+    recent_df = session.sql("""
+        SELECT 
+            NUMBER,
+            SHORT_DESCRIPTION,
+            CATEGORY,
+            ASSIGNMENT_GROUP,
+            ASSIGNED_TO,
+            OPENED_AT
+        FROM SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.INCIDENT_TRAINING_EXAMPLES
+        ORDER BY OPENED_AT DESC
+        LIMIT 10
+    """).to_pandas()
+    
+    st.dataframe(recent_df, use_container_width=True)
+
+with tab4:
+    st.header("Manual Processing")
+    
+    st.warning("⚠️ Use this only if automatic processing is paused")
+    
+    if st.button("🚀 Process Pending Incidents Now", type="primary"):
+        with st.spinner("Processing incidents..."):
+            try:
+                result = session.sql("""
+                    CALL SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.PROCESS_NEW_INCIDENTS()
+                """).collect()
+                
+                st.success(f"✅ {result[0][0]}")
+                st.balloons()
+            except Exception as e:
+                st.error(f"❌ Error: {str(e)}")
+    
+    st.divider()
+    
+    # View pending incidents
+    st.subheader("Pending Incidents")
+    pending_df = session.sql("""
+        SELECT 
+            NUMBER,
+            SHORT_DESCRIPTION,
+            CATEGORY,
+            PRIORITY,
+            STATE,
+            OPENED_AT
+        FROM SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.INCIDENTS
+        WHERE SENT_TO_SERVICE_NOW = FALSE
+        ORDER BY OPENED_AT DESC
+    """).to_pandas()
+    
+    st.dataframe(pending_df, use_container_width=True)
+    
+    st.divider()
+    
+    # Task management
+    st.subheader("Task Management")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("▶️ Resume Task"):
+            session.sql("ALTER TASK SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.AUTO_PROCESS_INCIDENTS_TASK RESUME").collect()
+            st.success("Task resumed")
+    
+    with col2:
+        if st.button("⏸️ Pause Task"):
+            session.sql("ALTER TASK SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.AUTO_PROCESS_INCIDENTS_TASK SUSPEND").collect()
+            st.warning("Task paused")
+			
+
+
+Getting an error while running the above code in streamlit in snowflake :
+An error occurred while loading the app. Error: Installing dependencies failed because the pyproject.toml file does not exist. Please create it.
+--
+why do I keep getting an error - Installing dependencies failed because the pyproject.toml file does not exist. Please create it.
+Do I need to create pyproject.toml file and if yes , what should I put in it
+--
+getting an error related to toml file :
+Failed to parse: `pyproject.toml`
+  Caused by: TOML parse error at line 1, column 1
+  |
+1 | [project]
+  | ^^^^^^^^^
+`pyproject.toml` is using the `[project]` table, but the required `project.name` field is not set
+--
+I do not have the access to delete environment file , added 
+[project]
+name = "incident-assignment-app"
+dependencies = [
+    "streamlit",
+    "pandas",
+    "snowflake-snowpark-python",
+    "plotly"
+]
+to toml file still the eroor remains same
+
+--
+I am runing the streamlit app on python enviroment - run on warehouse and getting an error :
+An error occurred while loading the app. Error: SQL compilation error: Cannot create a Python function with the specified packages. Please check your packages specification and try again. 'Packages not found: python==3.11'.
+--
+I am running below code to crreate the python app and its geting created but one sub header is throwing an error :
+
+Code:
+
+
+#Step 6: Create Streamlit App for Monitoring
+# streamlit_app.py
+import streamlit as st
+import pandas as pd
+from snowflake.snowpark.context import get_active_session
+
+# Get Snowflake session
+session = get_active_session()
+
+st.title("🎯 AI-Powered Incident Assignment System")
+st.markdown("### Real-time Incident Routing with Vector Search + LLM")
+
+# Tabs for different views
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "🔍 LLM Recommendations", "📚 Training Data", "⚙️ Manual Process"])
+
+with tab1:
+    st.header("System Overview")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    # Metrics
+    total_incidents = session.sql("""
+        SELECT COUNT(*) as count 
+        FROM SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.INCIDENTS 
+        WHERE STATE IN ('New', 'In Progress')
+    """).collect()[0]['COUNT']
+    
+    pending_incidents = session.sql("""
+        SELECT COUNT(*) as count 
+        FROM SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.INCIDENTS 
+        WHERE SENT_TO_SERVICE_NOW = FALSE
+    """).collect()[0]['COUNT']
+    
+    processed_incidents = session.sql("""
+        SELECT COUNT(*) as count 
+        FROM SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.LLM_DATA
+    """).collect()[0]['COUNT']
+    
+    training_examples = session.sql("""
+        SELECT COUNT(*) as count 
+        FROM SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.INCIDENT_TRAINING_EXAMPLES
+    """).collect()[0]['COUNT']
+    
+    col1.metric("Total Open Incidents", total_incidents)
+    col2.metric("Pending Processing", pending_incidents, delta=f"-{pending_incidents}" if pending_incidents > 0 else "0")
+    col3.metric("AI Processed", processed_incidents, delta=f"+{processed_incidents}")
+    col4.metric("Training Examples", training_examples)
+    
+    # Task status
+    st.subheader("Automation Status")
+    task_status = session.sql("""
+        SELECT NAME, STATE, SCHEDULE, NEXT_SCHEDULED_TIME 
+        FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY())
+        WHERE NAME = 'AUTO_PROCESS_INCIDENTS_TASK'
+        ORDER BY SCHEDULED_TIME DESC
+        LIMIT 1
+    """).to_pandas()
+    
+    if not task_status.empty:
+        st.dataframe(task_status, use_container_width=True)
+    else:
+        st.info("Task not found or never run")
+
+with tab2:
+    st.header("LLM Recommendations")
+    
+    # Filter options
+    col1, col2 = st.columns(2)
+    with col1:
+        confidence_filter = st.slider("Minimum Confidence Score", 0.0, 1.0, 0.7)
+    with col2:
+        category_filter = st.multiselect(
+            "Filter by Category",
+            options=session.sql("SELECT DISTINCT CATEGORY FROM SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.LLM_DATA").to_pandas()['CATEGORY'].tolist()
+        )
+    
+    # Build query
+    query = f"""
+        SELECT 
+            NUMBER,
+            SHORT_DESCRIPTION,
+            CATEGORY,
+            PRIORITY,
+            STATE,
+            CURRENT_ASSIGNMENT_GROUP,
+            CURRENT_ASSIGNED_TO,
+            RECOMMENDED_ASSIGNMENT_GROUP,
+            RECOMMENDED_ASSIGNED_TO,
+            CONFIDENCE_SCORE,
+            REASONING
+        FROM SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.LLM_DATA
+        WHERE TRY_CAST(CONFIDENCE_SCORE AS FLOAT) >= {confidence_filter}
+    """
+    
+    if category_filter:
+        categories = "','".join(category_filter)
+        query += f" AND CATEGORY IN ('{categories}')"
+    
+    query += " ORDER BY TRY_CAST(CONFIDENCE_SCORE AS FLOAT) DESC"
+    
+    recommendations_df = session.sql(query).to_pandas()
+    
+    st.dataframe(
+        recommendations_df,
+        use_container_width=True,
+        column_config={
+            "CONFIDENCE_SCORE": st.column_config.ProgressColumn(
+                "Confidence",
+                format="%.2f",
+                min_value=0,
+                max_value=1,
+            ),
+        }
+    )
+    
+    # Download button
+    st.download_button(
+        label="Download Recommendations as CSV",
+        data=recommendations_df.to_csv(index=False).encode('utf-8'),
+        file_name='incident_recommendations.csv',
+        mime='text/csv',
+    )
+
+with tab3:
+    st.header("Training Data Statistics")
+    
+    # Assignment distribution
+    st.subheader("Assignment Group Distribution")
+    dist_df = session.sql("""
+        SELECT 
+            ASSIGNMENT_GROUP,
+            COUNT(*) as incident_count
+        FROM SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.INCIDENT_TRAINING_EXAMPLES
+        GROUP BY ASSIGNMENT_GROUP
+        ORDER BY incident_count DESC
+    """).to_pandas()
+    
+    st.bar_chart(dist_df.set_index('ASSIGNMENT_GROUP'))
+    
+    # Recent additions
+    st.subheader("Recently Added Training Examples")
+    recent_df = session.sql("""
+        SELECT 
+            NUMBER,
+            SHORT_DESCRIPTION,
+            CATEGORY,
+            ASSIGNMENT_GROUP,
+            ASSIGNED_TO,
+            OPENED_AT
+        FROM SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.INCIDENT_TRAINING_EXAMPLES
+        ORDER BY OPENED_AT DESC
+        LIMIT 10
+    """).to_pandas()
+    
+    st.dataframe(recent_df, use_container_width=True)
+
+with tab4:
+    st.header("Manual Processing")
+    
+    st.warning("⚠️ Use this only if automatic processing is paused")
+    
+    if st.button("🚀 Process Pending Incidents Now", type="primary"):
+        with st.spinner("Processing incidents..."):
+            try:
+                result = session.sql("""
+                    CALL SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.PROCESS_NEW_INCIDENTS()
+                """).collect()
+                
+                st.success(f"✅ {result[0][0]}")
+                st.balloons()
+            except Exception as e:
+                st.error(f"❌ Error: {str(e)}")
+    
+    st.divider()
+    
+    # View pending incidents
+    st.subheader("Pending Incidents")
+    pending_df = session.sql("""
+        SELECT 
+            NUMBER,
+            SHORT_DESCRIPTION,
+            CATEGORY,
+            PRIORITY,
+            STATE,
+            OPENED_AT
+        FROM SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.INCIDENTS
+        WHERE SENT_TO_SERVICE_NOW = FALSE
+        ORDER BY OPENED_AT DESC
+    """).to_pandas()
+    
+    st.dataframe(pending_df, use_container_width=True)
+    
+    st.divider()
+    
+    # Task management
+    st.subheader("Task Management")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("▶️ Resume Task"):
+            session.sql("ALTER TASK SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.AUTO_PROCESS_INCIDENTS_TASK RESUME").collect()
+            st.success("Task resumed")
+    
+    with col2:
+        if st.button("⏸️ Pause Task"):
+            session.sql("ALTER TASK SERVICENOW_DEST_DB.SERVICENOW_DEST_SCHEMA.AUTO_PROCESS_INCIDENTS_TASK SUSPEND").collect()
+            st.warning("Task paused")
+			
+
+
+Error : 
+SnowparkSQLException: (1304): 01c328e7-0001-b044-000c-d39600036f2e: 000904 (42000): SQL compilation error: error line 1 at position 20 invalid identifier 'SCHEDULE'
+Traceback:
+File "/usr/lib/python_udf/214cb688b5a9afa17d873c8c796b994aa0a816f7cd1109b368b796a30e5faa7d/lib/python3.11/site-packages/streamlit/runtime/scriptrunner/script_runner.py", line 565, in _run_script
+    exec(code, module.__dict__)
+File "/tmp/appRoot/streamlit_app.py", line 58, in <module>
+    """).to_pandas()
+         ^^^^^^^^^^^
+File "/usr/lib/python_udf/214cb688b5a9afa17d873c8c796b994aa0a816f7cd1109b368b796a30e5faa7d/lib/python3.11/site-packages/snowflake/snowpark/_internal/telemetry.py", line 295, in wrap
+    result = func(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^
+File "/usr/lib/python_udf/214cb688b5a9afa17d873c8c796b994aa0a816f7cd1109b368b796a30e5faa7d/lib/python3.11/site-packages/snowflake/snowpark/_internal/utils.py", line 1148, in call_wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+File "/usr/lib/python_udf/214cb688b5a9afa17d873c8c796b994aa0a816f7cd1109b368b796a30e5faa7d/lib/python3.11/site-packages/snowflake/snowpark/dataframe.py", line 1081, in to_pandas
+    result = self._session._conn.execute(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/usr/lib/python_udf/214cb688b5a9afa17d873c8c796b994aa0a816f7cd1109b368b796a30e5faa7d/lib/python3.11/site-packages/snowflake/snowpark/_internal/server_connection.py", line 648, in execute
+    result_set, result_meta = self.get_result_set(
+                              ^^^^^^^^^^^^^^^^^^^^
+File "/usr/lib/python_udf/214cb688b5a9afa17d873c8c796b994aa0a816f7cd1109b368b796a30e5faa7d/lib/python3.11/site-packages/snowflake/snowpark/_internal/analyzer/snowflake_plan.py", line 327, in wrap
+    node.snowflake_plan.quoted_identifiers
+File "/usr/lib/python_udf/214cb688b5a9afa17d873c8c796b994aa0a816f7cd1109b368b796a30e5faa7d/lib/python3.11/site-packages/snowflake/snowpark/_internal/analyzer/snowflake_plan.py", line 585, in quoted_identifiers
+    return [attr.name for attr in self.attributes]
+                                  ^^^^^^^^^^^^^^^
+File "/usr/lib/python_udf/214cb688b5a9afa17d873c8c796b994aa0a816f7cd1109b368b796a30e5faa7d/lib/python3.11/site-packages/snowflake/snowpark/_internal/analyzer/snowflake_plan.py", line 609, in attributes
+    attributes = self._analyze_attributes()
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/usr/lib/python_udf/214cb688b5a9afa17d873c8c796b994aa0a816f7cd1109b368b796a30e5faa7d/lib/python3.11/site-packages/snowflake/snowpark/_internal/analyzer/snowflake_plan.py", line 339, in wrap
+    raise ne.with_traceback(tb) from None
+File "/usr/lib/python_udf/214cb688b5a9afa17d873c8c796b994aa0a816f7cd1109b368b796a30e5faa7d/lib/python3.11/site-packages/snowflake/snowpark/_internal/analyzer/snowflake_plan.py", line 180, in wrap
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+File "/usr/lib/python_udf/214cb688b5a9afa17d873c8c796b994aa0a816f7cd1109b368b796a30e5faa7d/lib/python3.11/site-packages/snowflake/snowpark/_internal/analyzer/snowflake_plan.py", line 598, in _analyze_attributes
+    return analyze_attributes(
+           ^^^^^^^^^^^^^^^^^^^
+File "/usr/lib/python_udf/214cb688b5a9afa17d873c8c796b994aa0a816f7cd1109b368b796a30e5faa7d/lib/python3.11/site-packages/snowflake/snowpark/_internal/analyzer/schema_utils.py", line 108, in analyze_attributes
+    attributes = session._get_result_attributes(sql, query_params)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/usr/lib/python_udf/214cb688b5a9afa17d873c8c796b994aa0a816f7cd1109b368b796a30e5faa7d/lib/python3.11/site-packages/snowflake/snowpark/session.py", line 3151, in _get_result_attributes
+    return self._conn.get_result_attributes(query, query_params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/usr/lib/python_udf/214cb688b5a9afa17d873c8c796b994aa0a816f7cd1109b368b796a30e5faa7d/lib/python3.11/site-packages/snowflake/snowpark/_internal/server_connection.py", line 277, in get_result_attributes
+    self._run_new_describe(self._cursor, query, query_params=query_params),
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/usr/lib/python_udf/214cb688b5a9afa17d873c8c796b994aa0a816f7cd1109b368b796a30e5faa7d/lib/python3.11/site-packages/snowflake/snowpark/_internal/server_connection.py", line 288, in _run_new_describe
+    result_metadata = run_new_describe(cursor, query, query_params)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/usr/lib/python_udf/214cb688b5a9afa17d873c8c796b994aa0a816f7cd1109b368b796a30e5faa7d/lib/python3.11/site-packages/snowflake/snowpark/_internal/analyzer/schema_utils.py", line 177, in run_new_describe
+    return cursor._describe_internal(query, params=query_params)  # pyright: ignore
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/usr/lib/python_udf/214cb688b5a9afa17d873c8c796b994aa0a816f7cd1109b368b796a30e5faa7d/lib/python3.11/site-packages/snowflake/connector/cursor.py", line 1184, in _describe_internal
+    self.execute(*args, **kwargs)
+File "/usr/lib/python_udf/214cb688b5a9afa17d873c8c796b994aa0a816f7cd1109b368b796a30e5faa7d/lib/python3.11/site-packages/snowflake/connector/cursor.py", line 1144, in execute
+    Error.errorhandler_wrapper(self.connection, self, error_class, errvalue)
+File "/usr/lib/python_udf/214cb688b5a9afa17d873c8c796b994aa0a816f7cd1109b368b796a30e5faa7d/lib/python3.11/site-packages/snowflake/connector/errors.py", line 298, in errorhandler_wrapper
+    handed_over = Error.hand_to_other_handler(
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/usr/lib/python_udf/214cb688b5a9afa17d873c8c796b994aa0a816f7cd1109b368b796a30e5faa7d/lib/python3.11/site-packages/snowflake/connector/errors.py", line 354, in hand_to_other_handler
+    cursor.errorhandler(connection, cursor, error_class, error_value)
+File "/usr/lib/python_udf/214cb688b5a9afa17d873c8c796b994aa0a816f7cd1109b368b796a30e5faa7d/lib/python3.11/site-packages/snowflake/connector/errors.py", line 229, in default_errorhandler
+    raise error_class(
+--
+
+I used the simpler approach suggested no getting dfferent error :
+Could not fetch task information: "None of [Index(['name', 'state', 'schedule', 'warehouse'], dtype='object')] are in the [columns]"
+
+AttributeError: module 'streamlit' has no attribute 'column_config'
+Traceback:
+File "/usr/lib/python_udf/214cb688b5a9afa17d873c8c796b994aa0a816f7cd1109b368b796a30e5faa7d/lib/python3.11/site-packages/streamlit/runtime/scriptrunner/script_runner.py", line 565, in _run_script
+    exec(code, module.__dict__)
+File "/tmp/appRoot/streamlit_app.py", line 108, in <module>
+    "CONFIDENCE_SCORE": st.column_config.ProgressColumn(
+                        ^^^^^^^^^^^^^^^^
+--
+got new error - invalid identifier 'NUMBER'
+	
